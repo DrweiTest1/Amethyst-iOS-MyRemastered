@@ -49,7 +49,7 @@
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"]; 
 
     if (cell == nil) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
@@ -282,8 +282,37 @@
                     }
                 });
             };
-            id auth = [[NSClassFromString(@"ThirdPartyAuthenticator") alloc] initWithData:data];
-            [auth loginWithCallback:callback];
+
+            // Dynamic instantiation: try initWithInput:, then initWithData:, then fallback to init + set authData via KVC
+            Class thirdCls = NSClassFromString(@"ThirdPartyAuthenticator");
+            id auth = nil;
+            if (thirdCls) {
+                id instance = nil;
+                if ([thirdCls instancesRespondToSelector:@selector(initWithInput:)]) {
+                    instance = [[thirdCls alloc] initWithInput:data];
+                } else if ([thirdCls instancesRespondToSelector:@selector(initWithData:)]) {
+                    NSData *payload = nil;
+                    if ([data isKindOfClass:[NSData class]]) payload = (NSData *)data;
+                    else payload = [NSJSONSerialization dataWithJSONObject:data options:0 error:NULL];
+                    instance = [[thirdCls alloc] initWithData:payload];
+                } else {
+                    instance = [[thirdCls alloc] init];
+                    if ([instance respondsToSelector:@selector(setValue:forKey:)]) {
+                        @try {
+                            [instance setValue:data forKey:@"authData"];
+                        } @catch (NSException *ex) {
+                            // ignore if key not exist
+                        }
+                    }
+                }
+                auth = instance;
+            }
+
+            if (auth && [auth respondsToSelector:@selector(loginWithCallback:)]) {
+                [auth loginWithCallback:callback];
+            } else {
+                showDialog(localize(@"Error", nil), localize(@"login.error.unknown", nil));
+            }
         });
     }]];
     [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
@@ -293,8 +322,13 @@
 }
 
 - (void)actionLoginMicrosoft:(UITableViewCell *)sender {
-    NSURL *url = [NSURL URLWithString:@"https://login.live.com/oauth20_authorize.srf?client_id=00000000402b5328&response_type=code&scope=service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL&redirect_[...]
-    // existing implementation unchanged...
+    // Build the Microsoft OAuth URL safely to avoid truncated string literals
+    NSString *clientId = @"00000000402b5328";
+    NSString *scope = @"service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL";
+    NSString *redirect = @"ms-xal-00000000402b5328%3A%2F%2Fauth"; // percent-encoded
+    NSString *authURLStr = [NSString stringWithFormat:@"https://login.live.com/oauth20_authorize.srf?client_id=%@&response_type=code&scope=%@&redirect_uri=%@&display=touch&prompt=select_account", clientId, scope, redirect];
+    NSURL *url = [NSURL URLWithString:authURLStr];
+
     self.authVC =
         [[ASWebAuthenticationSession alloc] initWithURL:url
         callbackURLScheme:@"ms-xal-00000000402b5328"
@@ -306,7 +340,6 @@
             }
             return;
         }
-        // NSLog(@"URL returned = %@", [callbackURL absoluteString]);
 
         NSDictionary *queryItems = [self parseQueryItems:callbackURL.absoluteString];
         if (queryItems[@"code"]) {
@@ -323,7 +356,13 @@
                     [self callbackMicrosoftAuth:status success:success forCell:sender];
                 });
             };
-            [[[MicrosoftAuthenticator alloc] initWithInput:queryItems[@"code"]] loginWithCallback:callback];
+            id msa = [[NSClassFromString(@"MicrosoftAuthenticator") alloc] initWithInput:queryItems[@"code"]];
+            if (msa && [msa respondsToSelector:@selector(loginWithCallback:)]) {
+                [msa loginWithCallback:callback];
+            } else {
+                // fallback if class not present or different signature
+                [[[MicrosoftAuthenticator alloc] initWithInput:queryItems[@"code"]] loginWithCallback:callback];
+            }
         } else {
             if ([queryItems[@"error"] hasPrefix:@"access_denied"]) {
                 // Ignore access denial responses
