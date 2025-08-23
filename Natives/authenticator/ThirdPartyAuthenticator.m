@@ -1,216 +1,367 @@
-#import <Security/Security.h>
-#import "AFNetworking.h"
-#import "BaseAuthenticator.h"
-#import "../ios_uikit_bridge.h"
-#import "../utils.h"
+#import <AuthenticationServices/AuthenticationServices.h>
 
-// 补充接口声明，继承自BaseAuthenticator并声明必要属性
-@interface ThirdPartyAuthenticator : BaseAuthenticator
-@property (nonatomic, strong) NSMutableDictionary *authData; // 声明authData为可变字典
+#import "authenticator/BaseAuthenticator.h"
+#import "AccountListViewController.h"
+#import "AFNetworking.h"
+#import "LauncherPreferences.h"
+#import "UIImageView+AFNetworking.h"
+#import "ios_uikit_bridge.h"
+#import "utils.h"
+
+@interface AccountListViewController()<ASWebAuthenticationPresentationContextProviding>
+
+@property(nonatomic, strong) NSMutableArray *accountList;
+@property(nonatomic) ASWebAuthenticationSession *authVC;
+
 @end
 
-@implementation ThirdPartyAuthenticator
+@implementation AccountListViewController
 
-// 初始化方法：确保authData被正确初始化为可变字典
-- (instancetype)initWithData:(NSDictionary *)data {
-    self = [super init];
-    if (self) {
-        // 将传入的字典转为可变字典，确保可以修改
-        _authData = [data mutableCopy] ?: [NSMutableDictionary dictionary];
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    if (self.accountList == nil) {
+        self.accountList = [NSMutableArray array];
+    } else {
+        [self.accountList removeAllObjects];
     }
-    return self;
-}
 
-#pragma mark - Keychain helpers
-
-+ (NSString *)serviceNameForProfile:(NSString *)profileId {
-    if (profileId == nil) return nil;
-    return [NSString stringWithFormat:@"Amethyst-Auth-%@", profileId];
-}
-
-+ (NSDictionary *)tokenDataOfProfile:(NSString *)profileId {
-    if (profileId == nil) return nil;
-    NSString *service = [self serviceNameForProfile:profileId];
-    NSDictionary *query = @{  
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecReturnData: @YES,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne
-    };
-    CFTypeRef dataRef = NULL;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &dataRef);
-    if (status != errSecSuccess || dataRef == NULL) return nil;
-    NSData *data = (__bridge_transfer NSData *)dataRef;
-    NSError *err = nil;
-    NSDictionary *dict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
-    if (err) return nil;
-    return dict;
-}
-
-+ (BOOL)storeTokenData:(NSDictionary *)tokenData forProfile:(NSString *)profileId {
-    if (profileId == nil || tokenData == nil) return NO;
-    NSString *service = [self serviceNameForProfile:profileId];
-    NSData *payload = [NSJSONSerialization dataWithJSONObject:tokenData options:0 error:NULL];
-    NSDictionary *query = @{  
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-    };
-    NSDictionary *attributes = @{  
-        (__bridge id)kSecValueData: payload,
-    };
-    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)[query mutableCopy], NULL);
-    if (status == errSecSuccess) return YES;
-    if (status == errSecDuplicateItem) {
-        status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributes);
-        return status == errSecSuccess;
+    // List accounts
+    NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:listPath error:nil];
+    for(NSString *file in files) {
+        NSString *path = [listPath stringByAppendingPathComponent:file];
+        BOOL isDir = NO;
+        [fm fileExistsAtPath:path isDirectory:(&isDir)];
+        if(!isDir && [file hasSuffix:@".json"]) {
+            [self.accountList addObject:parseJSONFromFile(path)];
+        }
     }
-    return NO;
+
+    [self.tableView setSeparatorStyle:UITableViewCellSeparatorStyleSingleLine];
 }
 
-+ (BOOL)clearTokenDataOfProfile:(NSString *)profileId {
-    if (profileId == nil) return NO;
-    NSString *service = [self serviceNameForProfile:profileId];
-    NSDictionary *query = @{  
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-    };
-    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
-    return (status == errSecSuccess || status == errSecItemNotFound);
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return self.accountList.count + 1;
 }
 
-#pragma mark - Auth operations
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
 
-- (void)loginWithCallback:(Callback)callback {
-    callback(localize(@"login.thirdparty.progress.start", nil), YES);
+    if (cell == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
+    }
 
-    NSString *server = self.authData[@"server"];
-    NSString *username = self.authData[@"username"];
-    NSString *password = self.authData[@"password"];
-    if (server == nil || username == nil || password == nil) {
-        callback(localize(@"login.error.missing_params", nil), NO);
+    if (indexPath.row == self.accountList.count) {
+        cell.imageView.image = [UIImage imageNamed:@"IconAdd"];
+        cell.textLabel.text = localize(@"login.option.add", nil);
+        return cell;
+    }
+
+    NSDictionary *selected = self.accountList[indexPath.row];
+    // By default, display the saved username
+    cell.textLabel.text = selected[@"username"];
+    if ([selected[@"username"] hasPrefix:@"Demo."]) {
+        // Remove the prefix "Demo."
+        cell.textLabel.text = [selected[@"username"] substringFromIndex:5];
+        cell.detailTextLabel.text = localize(@"login.option.demo", nil);
+    } else if (selected[@"xboxGamertag"] == nil) {
+        cell.detailTextLabel.text = localize(@"login.option.local", nil);
+    } else {
+        // Display the Xbox gamertag for online accounts
+        cell.detailTextLabel.text = selected[@"xboxGamertag"];
+    }
+
+    cell.imageView.contentMode = UIViewContentModeCenter;
+    [cell.imageView setImageWithURL:[NSURL URLWithString:[selected[@"profilePicURL"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"]] placeholderImage:[UIImage imageNamed:@"DefaultAcc[...]
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+
+    if (indexPath.row == self.accountList.count) {
+        [self actionAddAccount:cell];
         return;
     }
 
-    if (self.authData[@"clientToken"] == nil) {
-        CFUUIDRef uuidRef = CFUUIDCreate(NULL);
-        CFStringRef uuidStr = CFUUIDCreateString(NULL, uuidRef);
-        self.authData[@"clientToken"] = (__bridge_transfer NSString *)uuidStr;
-        CFRelease(uuidRef);
-    }
+    self.modalInPresentation = YES;
+    self.tableView.userInteractionEnabled = NO;
+    [self addActivityIndicatorTo:cell];
 
-    NSString *url = [NSString stringWithFormat:@"%@/authserver/authenticate", server];
-
-    NSDictionary *json = @{  
-        @"agent": @{@"name": @"Minecraft", @"version": @1},
-        @"username": username,
-        @"password": password,
-        @"clientToken": self.authData[@"clientToken"],
-        @"requestUser": @YES
+    id callback = ^(id status, BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^(){
+            [self callbackMicrosoftAuth:status success:success forCell:cell];
+        });
     };
-
-    AFHTTPSessionManager *mgr = AFHTTPSessionManager.manager;
-    mgr.requestSerializer = [AFJSONRequestSerializer serializer];
-    mgr.responseSerializer = [AFJSONResponseSerializer serializer];
-
-    [mgr POST:url parameters:json headers:nil progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
-        if (![responseObject isKindOfClass:[NSDictionary class]]) {
-            callback(localize(@"login.error.invalid_response", nil), NO);
-            return;
-        }
-        NSDictionary *resp = (NSDictionary *)responseObject;
-        NSString *accessToken = resp[@"accessToken"];
-        NSString *clientToken = resp[@"clientToken"] ?: self.authData[@"clientToken"];
-        NSDictionary *selectedProfile = resp[@"selectedProfile"];
-        NSString *profileId = selectedProfile[@"id"] ?: @"0";
-        NSString *profileName = selectedProfile[@"name"] ?: username;
-
-        if (accessToken == nil) {
-            callback(localize(@"login.error.no_token", nil), NO);
-            return;
-        }
-
-        // 修正：使用可变字典赋值
-        self.authData[@"username"] = profileName;
-        self.authData[@"profileId"] = profileId;
-        self.authData[@"accessToken"] = @"0"; // 这里可能需要存真实token，根据业务调整
-        self.authData[@"clientToken"] = clientToken;
-        self.authData[@"type"] = @"thirdparty";
-        self.authData[@"server"] = server;
-
-        NSDictionary *tokenData = @{  
-            @"accessToken": accessToken,
-            @"clientToken": clientToken,
-            @"username": profileName
-        };
-        [ThirdPartyAuthenticator storeTokenData:tokenData forProfile:profileId];
-
-        [self saveChanges]; // 假设BaseAuthenticator有saveChanges方法
-
-        callback(@{  
-            @"profileId": profileId,
-            @"username": profileName
-        }, YES);
-
-    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-        callback(error, NO);
-    }];
+    [[BaseAuthenticator loadSavedName:self.accountList[indexPath.row][@"username"]] refreshTokenWithCallback:callback];
 }
 
-- (void)refreshTokenWithCallback:(Callback)callback {
-    callback(localize(@"login.thirdparty.progress.refresh", nil), YES);
-    NSString *server = self.authData[@"server"];
-    NSString *profileId = self.authData[@"profileId"];
-    NSDictionary *saved = nil;
-    if (profileId) saved = [ThirdPartyAuthenticator tokenDataOfProfile:profileId];
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete) {
+        // TODO: invalidate token
 
-    if (server == nil || saved == nil) {
-        callback(localize(@"login.error.no_refresh", nil), NO);
+        NSString *str = self.accountList[indexPath.row][@"username"];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *path = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), str];
+        if (self.whenDelete != nil) {
+            self.whenDelete(str);
+        }
+        NSString *xuid = self.accountList[indexPath.row][@"xuid"];
+        if (xuid) {
+            // Clear Microsoft tokens if present
+            if (NSClassFromString(@"MicrosoftAuthenticator")) {
+                [MicrosoftAuthenticator clearTokenDataOfProfile:xuid];
+            }
+            // Also attempt to clear thirdparty tokens
+            Class thirdCls = NSClassFromString(@"ThirdPartyAuthenticator");
+            if (thirdCls && [thirdCls respondsToSelector:@selector(clearTokenDataOfProfile:)]) {
+                [thirdCls performSelector:@selector(clearTokenDataOfProfile:) withObject:xuid];
+            }
+        }
+        [fm removeItemAtPath:path error:nil];
+        [self.accountList removeObjectAtIndex:indexPath.row];
+        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.row == self.accountList.count) {
+        return UITableViewCellEditingStyleNone;
+    } else {
+        return UITableViewCellEditingStyleDelete;
+    }
+}
+
+- (NSDictionary *)parseQueryItems:(NSString *)url {
+    NSMutableDictionary *result = [NSMutableDictionary new];
+    NSArray<NSURLQueryItem *> *queryItems = [NSURLComponents componentsWithString:url].queryItems;
+    for (NSURLQueryItem *item in queryItems) {
+        result[item.name] = item.value;
+    }
+    return result;
+}
+
+- (void)actionAddAccount:(UITableViewCell *)sender {
+    UIAlertController *picker = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertAction *actionMicrosoft = [UIAlertAction actionWithTitle:localize(@"login.option.microsoft", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginMicrosoft:sender];
+    }];
+    [picker addAction:actionMicrosoft];
+    UIAlertAction *actionLocal = [UIAlertAction actionWithTitle:localize(@"login.option.local", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginLocal:sender];
+    }];
+    [picker addAction:actionLocal];
+    // Add Third-party option
+    UIAlertAction *actionThird = [UIAlertAction actionWithTitle:localize(@"login.option.thirdparty", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self presentThirdPartyLoginDialog:sender];
+    }];
+    [picker addAction:actionThird];
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil];
+    [picker addAction:cancel];
+
+    picker.popoverPresentationController.sourceView = sender;
+    picker.popoverPresentationController.sourceRect = sender.bounds;
+
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)actionLoginLocal:(UIView *)sender {
+    if (getPrefBool(@"warnings.local_warn")) {
+        setPrefBool(@"warnings.local_warn", NO);
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"login.warn.title.localmode", nil) message:localize(@"login.warn.message.localmode", nil) preferredStyle:U[...]
+        alert.popoverPresentationController.sourceView = sender;
+        alert.popoverPresentationController.sourceRect = sender.bounds;
+        UIAlertAction *ok = [UIAlertAction actionWithTitle:localize(@"OK", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {[self actionLoginLocal:sender];}];
+        [alert addAction:ok];
+        [self presentViewController:alert animated:YES completion:nil];
         return;
     }
+    UIAlertController *controller = [UIAlertController alertControllerWithTitle:localize(@"Sign in", nil) message:localize(@"login.option.local", nil) preferredStyle:UIAlertControllerStyleAlert];
+    [controller addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = localize(@"login.alert.field.username", nil);
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        textField.borderStyle = UITextBorderStyleRoundedRect;
+    }];
+    [controller addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSArray *textFields = controller.textFields;
+        UITextField *usernameField = textFields[0];
+        if (usernameField.text.length < 3 || usernameField.text.length > 16) {
+            controller.message = localize(@"login.error.username.outOfRange", nil);
+            [self presentViewController:controller animated:YES completion:nil];
+        } else {
+            id callback = ^(id status, BOOL success) {
+                self.whenItemSelected();
+                [self dismissViewControllerAnimated:YES completion:nil];
+            };
+            [[[LocalAuthenticator alloc] initWithInput:usernameField.text] loginWithCallback:callback];
+        }
+    }]];
+    [controller addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:controller animated:YES completion:nil];
+}
 
-    NSString *url = [NSString stringWithFormat:@"%@/authserver/refresh", server];
-    NSString *accessToken = saved[@"accessToken"];
-    NSString *clientToken = saved[@"clientToken"] ?: self.authData[@"clientToken"];
+- (void)presentThirdPartyLoginDialog:(UIView *)sender {
+    UIAlertController *dlg = [UIAlertController alertControllerWithTitle:localize(@"Third-party Login", nil)
+                                                                 message:localize(@"login.thirdparty.prompt", nil)
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"Server (e.g. https://auth.example.com)";
+        textField.keyboardType = UIKeyboardTypeURL;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Username", nil);
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Password", nil);
+        textField.secureTextEntry = YES;
+    }];
 
-    NSDictionary *json = @{  
-        @"accessToken": accessToken ?: @"",
-        @"clientToken": clientToken ?: @""
-    };
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Login", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        UITextField *serverField = dlg.textFields[0];
+        UITextField *userField = dlg.textFields[1];
+        UITextField *passField = dlg.textFields[2];
 
-    AFHTTPSessionManager *mgr = AFHTTPSessionManager.manager;
-    mgr.requestSerializer = [AFJSONRequestSerializer serializer];
-    mgr.responseSerializer = [AFJSONResponseSerializer serializer];
-
-    [mgr POST:url parameters:json headers:nil progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
-        NSDictionary *resp = (NSDictionary *)responseObject;
-        NSString *newAccess = resp[@"accessToken"];
-        NSString *newClient = resp[@"clientToken"] ?: clientToken;
-        NSDictionary *selectedProfile = resp[@"selectedProfile"];
-        NSString *newProfileId = selectedProfile[@"id"] ?: profileId;
-
-        if (newAccess == nil) {
-            callback(localize(@"login.error.no_token", nil), NO);
+        if (serverField.text.length == 0 || userField.text.length == 0 || passField.text.length == 0) {
+            showDialog(localize(@"Error", nil), localize(@"login.error.missing_params", nil));
             return;
         }
 
-        NSDictionary *tokenData = @{  
-            @"accessToken": newAccess,
-            @"clientToken": newClient,
-            @"username": selectedProfile[@"name"] ?: self.authData[@"username"] ?: @""
-        };
-        [ThirdPartyAuthenticator storeTokenData:tokenData forProfile:newProfileId];
+        NSMutableDictionary *data = [NSMutableDictionary dictionary];
+        data[@"server"] = serverField.text;
+        data[@"username"] = userField.text;
+        data[@"password"] = passField.text;
+        data[@"type"] = @"thirdparty";
 
-        // 修正：更新可变字典
-        self.authData[@"profileId"] = newProfileId;
-        self.authData[@"clientToken"] = newClient;
-        [self saveChanges];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id callback = ^(id status, BOOL success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (success) {
+                        [self viewDidLoad];
+                        // optionally select the new account
+                    } else {
+                        NSString *errStr = nil;
+                        if ([status isKindOfClass:[NSError class]]) {
+                            NSData *errData = ((NSError *)status).userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
+                            if (errData) errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding];
+                            else errStr = ((NSError *)status).localizedDescription;
+                        } else if ([status isKindOfClass:[NSString class]]) {
+                            errStr = status;
+                        }
+                        showDialog(localize(@"Error", nil), errStr ?: localize(@"login.error.unknown", nil));
+                    }
+                });
+            };
+            id auth = [[NSClassFromString(@"ThirdPartyAuthenticator") alloc] initWithData:data];
+            [auth loginWithCallback:callback];
+        });
+    }]];
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    dlg.popoverPresentationController.sourceView = sender;
+    dlg.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:dlg animated:YES completion:nil];
+}
 
-        callback(@{  
-            @"profileId": newProfileId
-        }, YES);
-    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-        callback(error, NO);
+- (void)actionLoginMicrosoft:(UITableViewCell *)sender {
+    NSURL *url = [NSURL URLWithString:@"https://login.live.com/oauth20_authorize.srf?client_id=00000000402b5328&response_type=code&scope=service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL&redirect_[...]
+    // existing implementation unchanged...
+    self.authVC =
+        [[ASWebAuthenticationSession alloc] initWithURL:url
+        callbackURLScheme:@"ms-xal-00000000402b5328"
+        completionHandler:^(NSURL * _Nullable callbackURL, NSError * _Nullable error)
+    {
+        if (callbackURL == nil) {
+            if (error.code != ASWebAuthenticationSessionErrorCodeCanceledLogin) {
+                showDialog(localize(@"Error", nil), error.localizedDescription);
+            }
+            return;
+        }
+        // NSLog(@"URL returned = %@", [callbackURL absoluteString]);
+
+        NSDictionary *queryItems = [self parseQueryItems:callbackURL.absoluteString];
+        if (queryItems[@"code"]) {
+            dispatch_async(dispatch_get_main_queue(), ^(){
+                self.modalInPresentation = YES;
+                self.tableView.userInteractionEnabled = NO;
+                [self addActivityIndicatorTo:sender];
+            });
+            id callback = ^(id status, BOOL success) {
+                if ([status isKindOfClass:NSString.class] && [status isEqualToString:@"DEMO"] && success) {
+                    showDialog(localize(@"login.warn.title.demomode", nil), localize(@"login.warn.message.demomode", nil));
+                }
+                dispatch_async(dispatch_get_main_queue(), ^(){
+                    [self callbackMicrosoftAuth:status success:success forCell:sender];
+                });
+            };
+            [[[MicrosoftAuthenticator alloc] initWithInput:queryItems[@"code"]] loginWithCallback:callback];
+        } else {
+            if ([queryItems[@"error"] hasPrefix:@"access_denied"]) {
+                // Ignore access denial responses
+                return;
+            }
+            showDialog(localize(@"Error", nil), queryItems[@"error_description"]);
+        }
     }];
+
+    self.authVC.prefersEphemeralWebBrowserSession = YES;
+    self.authVC.presentationContextProvider = self;
+
+    if ([self.authVC start] == NO) {
+        showDialog(localize(@"Error", nil), @"Unable to open Safari");
+    }
+}
+
+- (void)addActivityIndicatorTo:(UITableViewCell *)cell {
+    UIActivityIndicatorViewStyle indicatorStyle = UIActivityIndicatorViewStyleMedium;
+    UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:indicatorStyle];
+    cell.accessoryView = indicator;
+    [indicator sizeToFit];
+    [indicator startAnimating];
+}
+
+- (void)removeActivityIndicatorFrom:(UITableViewCell *)cell {
+    UIActivityIndicatorView *indicator = (id)cell.accessoryView;
+    [indicator stopAnimating];
+    cell.accessoryView = nil;
+}
+
+- (void)callbackMicrosoftAuth:(id)status success:(BOOL)success forCell:(UITableViewCell *)cell {
+    if (status != nil) {
+        if (success) {
+            cell.detailTextLabel.text = status;
+        } else {
+            self.modalInPresentation = NO;
+            self.tableView.userInteractionEnabled = YES;
+            [self removeActivityIndicatorFrom:cell];
+            cell.detailTextLabel.text = [status localizedDescription];
+            NSData *errorData = ((NSError *)status).userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
+            NSString *errorStr = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
+            NSLog(@"[MSA] Error: %@", errorStr);
+            showDialog(localize(@"Error", nil), errorStr);
+        }
+    } else if (success) {
+        self.whenItemSelected();
+        [self removeActivityIndicatorFrom:cell];
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
+#pragma mark - UIPopoverPresentationControllerDelegate
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller traitCollection:(UITraitCollection *)traitCollection {
+    return UIModalPresentationNone;
+}
+
+#pragma mark - ASWebAuthenticationPresentationContextProviding
+- (ASPresentationAnchor)presentationAnchorForWebAuthenticationSession:(ASWebAuthenticationSession *)session {
+    return UIApplication.sharedApplication.windows.firstObject;
 }
 
 @end
