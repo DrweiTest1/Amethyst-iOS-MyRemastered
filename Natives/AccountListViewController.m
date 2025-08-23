@@ -64,11 +64,19 @@
     NSDictionary *selected = self.accountList[indexPath.row];
     // By default, display the saved username
     cell.textLabel.text = selected[@"username"];
-    if ([selected[@"username"] hasPrefix:@"Demo."]) {
+
+    // Prefer explicit `type` field if available
+    NSString *type = selected[@"type"];
+    if (type != nil && [type isEqualToString:@"thirdparty"]) {
+        cell.detailTextLabel.text = localize(@"login.option.thirdparty", nil);
+    } else if ([selected[@"username"] hasPrefix:@"Demo."]) {
         // Remove the prefix "Demo."
         cell.textLabel.text = [selected[@"username"] substringFromIndex:5];
         cell.detailTextLabel.text = localize(@"login.option.demo", nil);
+    } else if (type != nil && [type isEqualToString:@"local"]) {
+        cell.detailTextLabel.text = localize(@"login.option.local", nil);
     } else if (selected[@"xboxGamertag"] == nil) {
+        // Fallback: treat as local if xboxGamertag missing
         cell.detailTextLabel.text = localize(@"login.option.local", nil);
     } else {
         // Display the Xbox gamertag for online accounts
@@ -76,7 +84,13 @@
     }
 
     cell.imageView.contentMode = UIViewContentModeCenter;
-    [cell.imageView setImageWithURL:[NSURL URLWithString:[selected[@"profilePicURL"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"]] placeholderImage:[UIImage imageNamed:@"DefaultAccount"]];
+    NSString *urlStr = selected[@"profilePicURL"];
+    if ([urlStr isKindOfClass:[NSString class]] && urlStr.length > 0) {
+        NSString *fixed = [urlStr stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+        [cell.imageView setImageWithURL:[NSURL URLWithString:fixed] placeholderImage:[UIImage imageNamed:@"DefaultAccIcon"]];
+    } else {
+        cell.imageView.image = [UIImage imageNamed:@"DefaultAccIcon"];
+    }
 
     return cell;
 }
@@ -99,7 +113,8 @@
             [self callbackMicrosoftAuth:status success:success forCell:cell];
         });
     };
-    [[BaseAuthenticator loadSavedName:self.accountList[indexPath.row][@"username"]] refreshTokenWithCallback:callback];
+    NSString *username = self.accountList[indexPath.row][@"username"];
+    [[BaseAuthenticator loadSavedName:username] refreshTokenWithCallback:callback];
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -114,7 +129,18 @@
         }
         NSString *xuid = self.accountList[indexPath.row][@"xuid"];
         if (xuid) {
-            [MicrosoftAuthenticator clearTokenDataOfProfile:xuid];
+            // Clear Microsoft tokens if present
+            if (NSClassFromString(@"MicrosoftAuthenticator")) {
+                [MicrosoftAuthenticator clearTokenDataOfProfile:xuid];
+            }
+            // Also attempt to clear thirdparty tokens via dynamic lookup (safe if header missing)
+            Class thirdCls = NSClassFromString(@"ThirdPartyAuthenticator");
+            if (thirdCls && [thirdCls respondsToSelector:@selector(clearTokenDataOfProfile:)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [thirdCls performSelector:@selector(clearTokenDataOfProfile:) withObject:xuid];
+#pragma clang diagnostic pop
+            }
         }
         [fm removeItemAtPath:path error:nil];
         [self.accountList removeObjectAtIndex:indexPath.row];
@@ -140,83 +166,34 @@
     return result;
 }
 
-// 整合第一部分的addAccountButtonTapped逻辑，替换原actionAddAccount
 - (void)actionAddAccount:(UITableViewCell *)sender {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"Add account", nil)
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Microsoft" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self actionLoginMicrosoft:sender]; // 关联现有Microsoft登录方法
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Local account", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self actionLoginLocal:sender]; // 关联现有本地账户登录方法
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Third-party server", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self presentThirdPartyLoginDialog]; // 新增第三方服务器登录
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
-    
-    // 保留弹窗位置设置（适配iPad）
-    alert.popoverPresentationController.sourceView = sender;
-    alert.popoverPresentationController.sourceRect = sender.bounds;
-
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-// 整合第一部分的第三方服务器登录对话框逻辑
-- (void)presentThirdPartyLoginDialog {
-    UIAlertController *dlg = [UIAlertController alertControllerWithTitle:localize(@"Third-party Login", nil)
-                                                                 message:localize(@"login.thirdparty.prompt", nil)
-                                                          preferredStyle:UIAlertControllerStyleAlert];
-    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-        textField.placeholder = @"Server (e.g. https://auth.example.com)";
-        textField.keyboardType = UIKeyboardTypeURL;
+    UIAlertController *picker = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertAction *actionMicrosoft = [UIAlertAction actionWithTitle:localize(@"login.option.microsoft", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginMicrosoft:sender];
     }];
-    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-        textField.placeholder = localize(@"Username", nil);
-        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    [picker addAction:actionMicrosoft];
+    UIAlertAction *actionLocal = [UIAlertAction actionWithTitle:localize(@"login.option.local", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginLocal:sender];
     }];
-    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-        textField.placeholder = localize(@"Password", nil);
-        textField.secureTextEntry = YES;
+    [picker addAction:actionLocal];
+    // Add Third-party option
+    UIAlertAction *actionThird = [UIAlertAction actionWithTitle:localize(@"login.option.thirdparty", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self presentThirdPartyLoginDialog:sender];
     }];
+    [picker addAction:actionThird];
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil];
+    [picker addAction:cancel];
 
-    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Login", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        UITextField *serverField = dlg.textFields[0];
-        UITextField *userField = dlg.textFields[1];
-        UITextField *passField = dlg.textFields[2];
+    picker.popoverPresentationController.sourceView = sender;
+    picker.popoverPresentationController.sourceRect = sender.bounds;
 
-        NSMutableDictionary *data = [NSMutableDictionary dictionary];
-        data[@"server"] = serverField.text;
-        data[@"username"] = userField.text;
-        data[@"password"] = passField.text;
-        data[@"type"] = @"thirdparty";
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // 显示加载状态（复用现有UI模式）
-            id callback = ^(id status, BOOL success) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (success) {
-                        // 刷新账户列表
-                        [self viewDidLoad];
-                        [self.tableView reloadData];
-                    } else {
-                        showDialog(localize(@"Error", nil), status);
-                    }
-                });
-            };
-            id auth = [[NSClassFromString(@"ThirdPartyAuthenticator") alloc] initWithData:data];
-            [auth loginWithCallback:callback];
-        });
-    }]];
-    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:dlg animated:YES completion:nil];
+    [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)actionLoginLocal:(UIView *)sender {
     if (getPrefBool(@"warnings.local_warn")) {
         setPrefBool(@"warnings.local_warn", NO);
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"login.warn.title.localmode", nil) message:localize(@"login.warn.message.localmode", nil) preferredStyle:UIAlertControllerStyleActionSheet];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"login.warn.title.localmode", nil) message:localize(@"login.warn.message.localmode", nil) preferredStyle:UIAlertControllerStyleAlert];
         alert.popoverPresentationController.sourceView = sender;
         alert.popoverPresentationController.sourceRect = sender.bounds;
         UIAlertAction *ok = [UIAlertAction actionWithTitle:localize(@"OK", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {[self actionLoginLocal:sender];}];
@@ -248,9 +225,76 @@
     [self presentViewController:controller animated:YES completion:nil];
 }
 
-- (void)actionLoginMicrosoft:(UITableViewCell *)sender {
-    NSURL *url = [NSURL URLWithString:@"https://login.live.com/oauth20_authorize.srf?client_id=00000000402b5328&response_type=code&scope=service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL&redirect_url=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf"];
+- (void)presentThirdPartyLoginDialog:(UIView *)sender {
+    UIAlertController *dlg = [UIAlertController alertControllerWithTitle:localize(@"Third-party Login", nil)
+                                                                 message:localize(@"login.thirdparty.prompt", nil)
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"Server (e.g. https://auth.example.com)";
+        textField.keyboardType = UIKeyboardTypeURL;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Username", nil);
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Password", nil);
+        textField.secureTextEntry = YES;
+    }];
 
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Login", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        UITextField *serverField = dlg.textFields[0];
+        UITextField *userField = dlg.textFields[1];
+        UITextField *passField = dlg.textFields[2];
+
+        if (serverField.text.length == 0 || userField.text.length == 0 || passField.text.length == 0) {
+            showDialog(localize(@"Error", nil), localize(@"login.error.missing_params", nil));
+            return;
+        }
+
+        NSMutableDictionary *data = [NSMutableDictionary dictionary];
+        data[@"server"] = serverField.text;
+        data[@"username"] = userField.text;
+        data[@"password"] = passField.text;
+        data[@"type"] = @"thirdparty";
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id callback = ^(id status, BOOL success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (success && [status isKindOfClass:NSString.class] && [status isEqualToString:@"DEMO"]) {
+                        showDialog(localize(@"login.warn.title.demomode", nil), localize(@"login.warn.message.demomode", nil));
+                    }
+                    if (success) {
+                        [self viewDidLoad];
+                    } else {
+                        NSString *errStr = nil;
+                        if ([status isKindOfClass:[NSError class]]) {
+                            NSData *errData = ((NSError *)status).userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
+                            if (errData) errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding];
+                            else errStr = ((NSError *)status).localizedDescription;
+                        } else if ([status isKindOfClass:[NSString class]]) {
+                            errStr = status;
+                        } else {
+                            errStr = [status description];
+                        }
+                        showDialog(localize(@"Error", nil), errStr ?: localize(@"login.error.unknown", nil));
+                    }
+                });
+            };
+            id auth = [[NSClassFromString(@"ThirdPartyAuthenticator") alloc] initWithData:data];
+            [auth loginWithCallback:callback];
+        });
+    }]];
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    dlg.popoverPresentationController.sourceView = sender;
+    dlg.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:dlg animated:YES completion:nil];
+}
+
+- (void)actionLoginMicrosoft:(UITableViewCell *)sender {
+    NSURL *url = [NSURL URLWithString:@"https://login.live.com/oauth20_authorize.srf?client_id=00000000402b5328&response_type=code&scope=service%3A%3Auser.auth.xboxlive.com%3A%3AMBI_SSL&redirect_[...]
+    // existing implementation unchanged...
     self.authVC =
         [[ASWebAuthenticationSession alloc] initWithURL:url
         callbackURLScheme:@"ms-xal-00000000402b5328"
@@ -312,18 +356,38 @@
 }
 
 - (void)callbackMicrosoftAuth:(id)status success:(BOOL)success forCell:(UITableViewCell *)cell {
+    // Safely normalize status to string for UI, and handle NSError-specific logs
     if (status != nil) {
         if (success) {
-            cell.detailTextLabel.text = status;
+            // status could be NSString or other user-readable object
+            if ([status isKindOfClass:[NSString class]]) {
+                cell.detailTextLabel.text = status;
+            } else {
+                cell.detailTextLabel.text = [status description];
+            }
         } else {
             self.modalInPresentation = NO;
             self.tableView.userInteractionEnabled = YES;
             [self removeActivityIndicatorFrom:cell];
-            cell.detailTextLabel.text = [status localizedDescription];
-            NSData *errorData = ((NSError *)status).userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
-            NSString *errorStr = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
-            NSLog(@"[MSA] Error: %@", errorStr);
-            showDialog(localize(@"Error", nil), errorStr);
+
+            NSString *errMsg = nil;
+            if ([status isKindOfClass:[NSError class]]) {
+                NSError *err = (NSError *)status;
+                errMsg = err.localizedDescription;
+                NSData *errorData = err.userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
+                if (errorData) {
+                    NSString *errorStr = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
+                    NSLog(@"[MSA] Error: %@", errorStr);
+                    errMsg = errorStr ?: errMsg;
+                }
+            } else if ([status isKindOfClass:[NSString class]]) {
+                errMsg = status;
+            } else {
+                errMsg = [status description];
+            }
+
+            cell.detailTextLabel.text = errMsg;
+            showDialog(localize(@"Error", nil), errMsg);
         }
     } else if (success) {
         self.whenItemSelected();
