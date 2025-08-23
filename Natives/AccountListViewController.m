@@ -140,23 +140,77 @@
     return result;
 }
 
+// 整合第一部分的addAccountButtonTapped逻辑，替换原actionAddAccount
 - (void)actionAddAccount:(UITableViewCell *)sender {
-    UIAlertController *picker = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    UIAlertAction *actionMicrosoft = [UIAlertAction actionWithTitle:localize(@"login.option.microsoft", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self actionLoginMicrosoft:sender];
-    }];
-    [picker addAction:actionMicrosoft];
-    UIAlertAction *actionLocal = [UIAlertAction actionWithTitle:localize(@"login.option.local", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self actionLoginLocal:sender];
-    }];
-    [picker addAction:actionLocal];
-    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil];
-    [picker addAction:cancel];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"Add account", nil)
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Microsoft" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginMicrosoft:sender]; // 关联现有Microsoft登录方法
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Local account", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self actionLoginLocal:sender]; // 关联现有本地账户登录方法
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Third-party server", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self presentThirdPartyLoginDialog]; // 新增第三方服务器登录
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    
+    // 保留弹窗位置设置（适配iPad）
+    alert.popoverPresentationController.sourceView = sender;
+    alert.popoverPresentationController.sourceRect = sender.bounds;
 
-    picker.popoverPresentationController.sourceView = sender;
-    picker.popoverPresentationController.sourceRect = sender.bounds;
+    [self presentViewController:alert animated:YES completion:nil];
+}
 
-    [self presentViewController:picker animated:YES completion:nil];
+// 整合第一部分的第三方服务器登录对话框逻辑
+- (void)presentThirdPartyLoginDialog {
+    UIAlertController *dlg = [UIAlertController alertControllerWithTitle:localize(@"Third-party Login", nil)
+                                                                 message:localize(@"login.thirdparty.prompt", nil)
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"Server (e.g. https://auth.example.com)";
+        textField.keyboardType = UIKeyboardTypeURL;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Username", nil);
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [dlg addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = localize(@"Password", nil);
+        textField.secureTextEntry = YES;
+    }];
+
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Login", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        UITextField *serverField = dlg.textFields[0];
+        UITextField *userField = dlg.textFields[1];
+        UITextField *passField = dlg.textFields[2];
+
+        NSMutableDictionary *data = [NSMutableDictionary dictionary];
+        data[@"server"] = serverField.text;
+        data[@"username"] = userField.text;
+        data[@"password"] = passField.text;
+        data[@"type"] = @"thirdparty";
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 显示加载状态（复用现有UI模式）
+            id callback = ^(id status, BOOL success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (success) {
+                        // 刷新账户列表
+                        [self viewDidLoad];
+                        [self.tableView reloadData];
+                    } else {
+                        showDialog(localize(@"Error", nil), status);
+                    }
+                });
+            };
+            id auth = [[NSClassFromString(@"ThirdPartyAuthenticator") alloc] initWithData:data];
+            [auth loginWithCallback:callback];
+        });
+    }]];
+    [dlg addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:dlg animated:YES completion:nil];
 }
 
 - (void)actionLoginLocal:(UIView *)sender {
