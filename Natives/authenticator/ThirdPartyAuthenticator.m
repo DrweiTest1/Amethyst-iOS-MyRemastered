@@ -1,10 +1,10 @@
 #import <Security/Security.h>
 #import "AFNetworking.h"
-#import "BaseAuthenticator.h"
+#import "authenticator/BaseAuthenticator.h"
 #import "../ios_uikit_bridge.h"
 #import "../utils.h"
 
-// Ensure the compiler knows this class inherits from BaseAuthenticator
+// Make sure compiler knows this is a subclass of BaseAuthenticator
 @interface ThirdPartyAuthenticator : BaseAuthenticator
 @end
 
