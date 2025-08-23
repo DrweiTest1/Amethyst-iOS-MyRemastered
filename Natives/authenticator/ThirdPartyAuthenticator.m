@@ -4,7 +4,22 @@
 #import "../ios_uikit_bridge.h"
 #import "../utils.h"
 
+// 补充接口声明，继承自BaseAuthenticator并声明必要属性
+@interface ThirdPartyAuthenticator : BaseAuthenticator
+@property (nonatomic, strong) NSMutableDictionary *authData; // 声明authData为可变字典
+@end
+
 @implementation ThirdPartyAuthenticator
+
+// 初始化方法：确保authData被正确初始化为可变字典
+- (instancetype)initWithData:(NSDictionary *)data {
+    self = [super init];
+    if (self) {
+        // 将传入的字典转为可变字典，确保可以修改
+        _authData = [data mutableCopy] ?: [NSMutableDictionary dictionary];
+    }
+    return self;
+}
 
 #pragma mark - Keychain helpers
 
@@ -114,9 +129,10 @@
             return;
         }
 
+        // 修正：使用可变字典赋值
         self.authData[@"username"] = profileName;
         self.authData[@"profileId"] = profileId;
-        self.authData[@"accessToken"] = @"0";
+        self.authData[@"accessToken"] = @"0"; // 这里可能需要存真实token，根据业务调整
         self.authData[@"clientToken"] = clientToken;
         self.authData[@"type"] = @"thirdparty";
         self.authData[@"server"] = server;
@@ -128,7 +144,7 @@
         };
         [ThirdPartyAuthenticator storeTokenData:tokenData forProfile:profileId];
 
-        [self saveChanges];
+        [self saveChanges]; // 假设BaseAuthenticator有saveChanges方法
 
         callback(@{  
             @"profileId": profileId,
@@ -184,6 +200,7 @@
         };
         [ThirdPartyAuthenticator storeTokenData:tokenData forProfile:newProfileId];
 
+        // 修正：更新可变字典
         self.authData[@"profileId"] = newProfileId;
         self.authData[@"clientToken"] = newClient;
         [self saveChanges];
