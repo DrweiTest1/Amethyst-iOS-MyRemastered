@@ -16,6 +16,18 @@
 
 @implementation MinecraftResourceDownloadTask
 
+// Helper: convert various error-object representations into a readable string
+static NSString *errorObjectToString(id errObj) {
+    if (errObj == nil) return nil;
+    if ([errObj isKindOfClass:[NSError class]]) {
+        return ((NSError *)errObj).localizedDescription;
+    } else if ([errObj isKindOfClass:[NSString class]]) {
+        return (NSString *)errObj;
+    } else {
+        return [errObj description];
+    }
+}
+
 - (instancetype)init {
     self = [super init];
     // TODO: implement background download
@@ -106,12 +118,20 @@
 
     void(^completionBlock)(void) = ^{
         self.metadata = parseJSONFromFile(path);
-        if (self.metadata[@"NSErrorObject"]) {
-            [self finishDownloadWithErrorString:[self.metadata[@"NSErrorObject"] localizedDescription]];
+        id nserr = self.metadata[@"NSErrorObject"];
+        if (nserr) {
+            NSString *msg = errorObjectToString(nserr) ?: @"Unknown error";
+            [self finishDownloadWithErrorString:msg];
             return;
         }
         if (self.metadata[@"inheritsFrom"]) {
             NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), self.metadata[@"inheritsFrom"]]);
+            id inheritErr = inheritsFromDict[@"NSErrorObject"];
+            if (inheritErr) {
+                NSString *msg = errorObjectToString(inheritErr) ?: @"Unknown error";
+                [self finishDownloadWithErrorString:msg];
+                return;
+            }
             if (inheritsFromDict) {
                 [MinecraftResourceUtils processVersion:self.metadata inheritsFrom:inheritsFromDict];
                 self.metadata = inheritsFromDict;
@@ -124,8 +144,10 @@
     if (!version) {
         // This is likely local version, check if json exists and has inheritsFrom
         NSMutableDictionary *json = parseJSONFromFile(path);
-        if (json[@"NSErrorObject"]) {
-            [self finishDownloadWithErrorString:[json[@"NSErrorObject"] localizedDescription]];
+        id nserr = json[@"NSErrorObject"];
+        if (nserr) {
+            NSString *msg = errorObjectToString(nserr) ?: @"Unknown error";
+            [self finishDownloadWithErrorString:msg];
             return;
         } else if (json[@"inheritsFrom"]) {
             version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
@@ -159,7 +181,27 @@
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
-        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
+        id parsed = parseJSONFromFile(path);
+        // If parseJSONFromFile returns an NSErrorObject, handle gracefully
+        id parseErr = nil;
+        if ([parsed isKindOfClass:[NSDictionary class]]) {
+            parseErr = parsed[@"NSErrorObject"];
+        } else {
+            // parsed might directly be an error object or string
+            if (parsed && ![parsed isKindOfClass:[NSDictionary class]]) {
+                parseErr = parsed;
+            }
+        }
+        if (parseErr) {
+            NSString *msg = errorObjectToString(parseErr) ?: @"Unknown error";
+            [self finishDownloadWithErrorString:msg];
+            return;
+        }
+        if (![parsed isKindOfClass:[NSDictionary class]]) {
+            [self finishDownloadWithErrorString:@"Failed to parse asset index"];
+            return;
+        }
+        self.metadata[@"assetIndexObj"] = parsed;
         success();
     }];
     [task resume];
@@ -167,10 +209,20 @@
 
 - (NSArray *)downloadClientLibraries {
     NSMutableArray *tasks = [NSMutableArray new];
-    for (NSDictionary *library in self.metadata[@"libraries"]) {
+    id libsObj = self.metadata[@"libraries"];
+    if (!libsObj || ![libsObj isKindOfClass:[NSArray class]]) {
+        NSLog(@"[MCDL] Warning: metadata.libraries is missing or not an array");
+        return @[];
+    }
+    for (NSDictionary *library in (NSArray *)libsObj) {
+        if (![library isKindOfClass:[NSDictionary class]]) continue;
         NSString *name = library[@"name"];
 
-        NSMutableDictionary *artifact = library[@"downloads"][@"artifact"];
+        NSMutableDictionary *artifact = nil;
+        id downloads = library[@"downloads"];
+        if ([downloads isKindOfClass:[NSDictionary class]]) {
+            artifact = [downloads[@"artifact"] mutableCopy];
+        }
         if (artifact == nil && [name containsString:@":"]) {
             NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
             artifact = [[NSMutableDictionary alloc] init];
@@ -180,6 +232,8 @@
             artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
             artifact[@"sha1"] = library[@"checksums"][0];
         }
+
+        if (![artifact isKindOfClass:[NSDictionary class]]) continue;
 
         NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
         NSString *sha = artifact[@"sha1"];
@@ -202,13 +256,22 @@
 
 - (NSArray *)downloadClientAssets {
     NSMutableArray *tasks = [NSMutableArray new];
-    NSDictionary *assets = self.metadata[@"assetIndexObj"];
-    if (!assets) {
+    id assets = self.metadata[@"assetIndexObj"];
+    if (!assets || ![assets isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[MCDL] Warning: assetIndexObj missing or invalid");
         return @[];
     }
-    for (NSString *name in assets[@"objects"]) {
-        NSDictionary *object = assets[@"objects"][name];
+    id objects = assets[@"objects"];
+    if (!objects || ![objects isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[MCDL] Warning: assetIndexObj.objects missing or invalid");
+        return @[];
+    }
+    for (NSString *name in (NSDictionary *)objects) {
+        if (![name isKindOfClass:[NSString class]]) continue;
+        NSDictionary *object = objects[name];
+        if (![object isKindOfClass:[NSDictionary class]]) continue;
         NSString *hash = object[@"hash"];
+        if (![hash isKindOfClass:[NSString class]] || hash.length < 2) continue;
         NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
         NSUInteger size = [object[@"size"] unsignedLongLongValue];
 
@@ -303,7 +366,7 @@
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
     showDialog(localize(@"Error", nil), error);
-    self.handleError();
+    if (self.handleError) self.handleError();
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
