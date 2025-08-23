@@ -129,6 +129,11 @@
 "login.msa.progress.acquireMCToken" = "(4/5) 请求 Minecraft 令牌";
 "login.msa.progress.checkMCProfile" = "(5/5) 检查 Minecraft 配置文件";
 
+"login.option.thirdparty" = "第三方验证账户";
+"login.thirdparty.prompt" = "请输入第三方认证服务器地址与账户信息。";
+"login.thirdparty.progress.start" = "开始第三方认证...";
+"login.thirdparty.progress.refresh" = "刷新第三方令牌...";
+
 "News" = "新闻";
 "Profiles" = "配置文件";
 "Settings" = "设置";
