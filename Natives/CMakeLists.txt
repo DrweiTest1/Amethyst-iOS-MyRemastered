@@ -177,6 +177,11 @@ add_executable(AngelAuraAmethyst
   input_bridge_v3.m
   ios_uikit_bridge.m
   utils.m
+
+  minizip/ioapi.c
+  minizip/iowin32.c
+  minizip/unzip.c
+  minizip/zip.c
 )
 
 if("${CMAKE_HOST_SYSTEM_NAME}" MATCHES "Linux|^GNU$|Android")
