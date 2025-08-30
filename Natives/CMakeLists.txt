@@ -178,7 +178,11 @@ add_executable(AngelAuraAmethyst
   ios_uikit_bridge.m
   utils.m
 
-  # Ensure ModsManagerViewController is compiled (required by LauncherProfilesViewController)
+  # Mod-related sources (ensure implementations are compiled and linked)
+  ModItem.m
+  ModService.m
+  ModTableViewCell.m
+  ModTableViewController.m
   ModsManagerViewController.m
 )
 
