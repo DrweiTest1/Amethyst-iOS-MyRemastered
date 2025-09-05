@@ -1,0 +1,100 @@
+#import <AuthenticationServices/AuthenticationServices.h>
+#import "authenticator/BaseAuthenticator.h"
+#import "authenticator/YggdrasilAuthenticator.h"
+#import "AccountListViewController.h"
+#import "AFNetworking.h"
+#import "LauncherPreferences.h"
+#import "UIImageView+AFNetworking.h"
+#import "ios_uikit_bridge.h"
+#import "utils.h"
+
+@interface AccountListViewController()<ASWebAuthenticationPresentationContextProviding>
+
+@property(nonatomic, strong) NSMutableArray *accountList;
+@property(nonatomic) ASWebAuthenticationSession *authVC;
+
+@end
+
+@implementation AccountListViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    if (self.accountList == nil) {
+        self.accountList = [NSMutableArray array];
+    } else {
+        [self.accountList removeAllObjects];
+    }
+
+    NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:listPath error:nil];
+    for(NSString *file in files) {
+        NSString *path = [listPath stringByAppendingPathComponent:file];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir) {
+            NSMutableDictionary *account = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+            if (account) {
+                [self.accountList addObject:account];
+            }
+        }
+    }
+}
+
+- (void)actionLoginYggdrasil {
+    UIAlertController *controller = [UIAlertController alertControllerWithTitle:@"第三方认证服务器登录"
+                                                                       message:@"请输入认证服务器地址、用户名和密码"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+
+    [controller addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"认证服务器地址 (如 https://auth.example.com)";
+    }];
+    [controller addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"用户名";
+    }];
+    [controller addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"密码";
+        textField.secureTextEntry = YES;
+    }];
+    [controller addAction:[UIAlertAction actionWithTitle:@"登录" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *server = controller.textFields[0].text;
+        NSString *username = controller.textFields[1].text;
+        NSString *password = controller.textFields[2].text;
+        if (server.length == 0 || username.length == 0 || password.length == 0) {
+            showDialog(@"错误", @"请填写完整信息");
+            return;
+        }
+        id callback = ^(id status, BOOL success) {
+            dispatch_async(dispatch_get_main_queue(), ^(){
+                if (success) {
+                    // 刷新列表
+                    [self.accountList removeAllObjects];
+                    NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
+                    NSFileManager *fm = [NSFileManager defaultManager];
+                    NSArray *files = [fm contentsOfDirectoryAtPath:listPath error:nil];
+                    for(NSString *file in files) {
+                        NSString *path = [listPath stringByAppendingPathComponent:file];
+                        BOOL isDir = NO;
+                        if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir) {
+                            NSMutableDictionary *account = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+                            if (account) {
+                                [self.accountList addObject:account];
+                            }
+                        }
+                    }
+                    [self.tableView reloadData];
+                    showDialog(@"登录成功", @"第三方账户已添加");
+                } else {
+                    showDialog(@"登录失败", [status description]);
+                }
+            });
+        };
+        [[[YggdrasilAuthenticator alloc] initWithServer:server username:username password:password] loginWithCallback:callback];
+    }]];
+    [controller addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:controller animated:YES completion:nil];
+}
+
+// 在合适的入口菜单、导航栏等处添加调用：
+// [self actionLoginYggdrasil];
+
+@end

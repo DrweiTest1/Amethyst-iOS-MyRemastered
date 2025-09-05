@@ -1,43 +1,24 @@
-#import <Security/Security.h>
 #import "BaseAuthenticator.h"
-#import "../LauncherPreferences.h"
-#import "../ios_uikit_bridge.h"
-#import "../utils.h"
+#import "LocalAuthenticator.h"
+#import "MicrosoftAuthenticator.h"
+#import "YggdrasilAuthenticator.h"
 
 @implementation BaseAuthenticator
 
-static BaseAuthenticator *current = nil;
-
-+ (id)current {
-    if (current == nil) {
-        [self loadSavedName:getPrefObject(@"internal.selected_account")];
-    }
-    return current;
-}
-
-+ (void)setCurrent:(BaseAuthenticator *)auth {
-    current = auth;
-}
-
 + (id)loadSavedName:(NSString *)name {
-    NSMutableDictionary *authData = parseJSONFromFile([NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), name]);
-    if (authData[@"NSErrorObject"] != nil) {
-        NSError *error = ((NSError *)authData[@"NSErrorObject"]);
-        if (error.code != NSFileReadNoSuchFileError) {
-            showDialog(localize(@"Error", nil), error.localizedDescription);
-        }
-        return nil;
-    }
-
-    if ([authData[@"expiresAt"] longValue] == 0) {
-        return [[LocalAuthenticator alloc] initWithData:authData];
-    } else { 
+    NSString *path = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), name];
+    NSMutableDictionary *authData = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+    if ([authData[@"server"] length] > 0) {
+        return [[YggdrasilAuthenticator alloc] initWithData:authData];
+    } else if ([authData[@"xuid"] length] > 0) {
         return [[MicrosoftAuthenticator alloc] initWithData:authData];
+    } else {
+        return [[LocalAuthenticator alloc] initWithData:authData];
     }
 }
 
 - (id)initWithData:(NSMutableDictionary *)data {
-    current = self = [self init];
+    self = [super init];
     self.authData = data;
     return self;
 }
@@ -48,32 +29,21 @@ static BaseAuthenticator *current = nil;
     return [self initWithData:data];
 }
 
-- (void)loginWithCallback:(Callback)callback {
-}
-
-- (void)refreshTokenWithCallback:(Callback)callback {
-}
-
+- (void)loginWithCallback:(Callback)callback {}
+- (void)refreshTokenWithCallback:(Callback)callback {}
 - (BOOL)saveChanges {
     NSError *error;
-
     [self.authData removeObjectForKey:@"input"];
-
     NSString *newPath = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), self.authData[@"username"]];
     if (self.authData[@"oldusername"] != nil && ![self.authData[@"username"] isEqualToString:self.authData[@"oldusername"]]) {
         NSString *oldPath = [NSString stringWithFormat:@"%s/accounts/%@.json", getenv("POJAV_HOME"), self.authData[@"oldusername"]];
-        [NSFileManager.defaultManager moveItemAtPath:oldPath toPath:newPath error:&error];
-        // handle error?
+        [[NSFileManager defaultManager] removeItemAtPath:oldPath error:nil];
     }
-
-    [self.authData removeObjectForKey:@"oldusername"];
-
-    error = saveJSONToFile(self.authData, newPath);
-
-    if (error != nil) {
-        showDialog(@"Error while saving file", error.localizedDescription);
+    BOOL result = [self.authData writeToFile:newPath atomically:YES];
+    if (!result) {
+        NSLog(@"Failed to save account data: %@", error);
     }
-    return error == nil;
+    return result;
 }
 
 @end
